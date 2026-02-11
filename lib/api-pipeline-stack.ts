@@ -77,7 +77,7 @@ export class ApiPipelineStack extends cdk.Stack {
         phases: {
           install: {
             'runtime-versions': {
-              nodejs: 18,
+              nodejs: 22,
             },
             commands: [
               'pip install aws-sam-cli',
