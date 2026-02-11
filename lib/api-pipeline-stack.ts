@@ -36,6 +36,7 @@ export class ApiPipelineStack extends cdk.Stack {
                 'lambda:*',
                 'apigateway:*',
                 'iam:*',
+                'codedeploy:*'
               ],
               resources: ['*'],
             }),
