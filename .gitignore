@@ -6,3 +6,6 @@ cdk.out
 .nyc_output
 coverage
 .DS_Store
+instructions.md
+lambda-api-sam.zip
+README.md

@@ -123,7 +123,7 @@ export class ApiPipelineStack extends cdk.Stack {
           ],
         },
         {
-          stageName: 'Build',
+          stageName: 'BuildDeploy',
           actions: [
             new codepipeline_actions.CodeBuildAction({
               actionName: 'SamBuildDeploy',
@@ -132,30 +132,13 @@ export class ApiPipelineStack extends cdk.Stack {
             }),
           ],
         }
-        // {
-        //   stageName: 'Deploy',
-        //   actions: [
-        //     new codepipeline_actions.CodeDeployLambdaDeployAction({
-        //       actionName: 'DeployLambda',
-        //       lambda: apiLambda,
-        //       inputs: [sourceOutput],
-        //     }),
-        //   ],
-        // },
       ],
     });
-
-    // Outputs
-    // new cdk.CfnOutput(this, 'ApiUrl', {
-    //   value: api.url,
-    // });
 
     new cdk.CfnOutput(this, 'SourceBucketName', {
       value: sourceBucket.bucketName,
     });
 
-    // new cdk.CfnOutput(this, 'LambdaFunctionName', {
-    //   value: apiLambda.functionName,
-    // });
+    
   }
 }
