@@ -1,6 +1,4 @@
 import * as cdk from 'aws-cdk-lib';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as codepipeline_actions from 'aws-cdk-lib/aws-codepipeline-actions';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
@@ -8,18 +6,58 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
+// Configuration constants
+const CONFIG = {
+  PIPELINE_NAME: 'globomantics-pipeline',
+  SOURCE_ARCHIVE: 'lambda-api-sam.zip',
+  NODEJS_VERSION: 22,
+  BUILD_IMAGE: codebuild.LinuxBuildImage.STANDARD_7_0,
+  SAM_TEMPLATE: 'template.yaml',
+  PACKAGED_TEMPLATE: 'packaged.yaml',
+  STACK_NAMES: {
+    DEV: 'lambda-api-sam-dev',
+    TEST: 'lambda-api-sam-test',
+    PROD: 'lambda-api-sam-prod',
+  },
+  DEPLOYMENT_PREFERENCES: {
+    DEV: 'AllAtOnce',
+    TEST: 'AllAtOnce',
+    PROD: 'Linear10PercentEvery1Minute',
+  },
+};
+
 export class ApiPipelineStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // S3 bucket for source code
-    const sourceBucket = new s3.Bucket(this, 'SourceBucket', {
+    const sourceBucket = this.createSourceBucket();
+
+    // IAM roles
+    const codeBuildRole = this.createCodeBuildRole();
+    const codePipelineRole = this.createCodePipelineRole();
+
+    // CodeBuild projects
+    const samBuildProject = this.createBuildProject(codeBuildRole, sourceBucket);
+    const devDeployProject = this.createDeployProject('DevDeployProject', codeBuildRole, sourceBucket, CONFIG.STACK_NAMES.DEV, CONFIG.DEPLOYMENT_PREFERENCES.DEV);
+    
+    // CodePipeline
+    this.createPipeline(codePipelineRole, sourceBucket, samBuildProject, devDeployProject);
+
+    new cdk.CfnOutput(this, 'SourceBucketName', {
+      value: sourceBucket.bucketName,
+    });
+  }
+
+  private createSourceBucket(): s3.Bucket {
+    return new s3.Bucket(this, 'SourceBucket', {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       versioned: true,
     });
+  }
 
-    // IAM roles
-    const codeBuildRole = new iam.Role(this, 'CodeBuildRole', {
+  private createCodeBuildRole(): iam.Role {
+    return new iam.Role(this, 'CodeBuildRole', {
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
       inlinePolicies: {
         CodeBuildPolicy: new iam.PolicyDocument({
@@ -44,8 +82,10 @@ export class ApiPipelineStack extends cdk.Stack {
         }),
       },
     });
+  }
 
-    const codePipelineRole = new iam.Role(this, 'CodePipelineRole', {
+  private createCodePipelineRole(): iam.Role {
+    return new iam.Role(this, 'CodePipelineRole', {
       assumedBy: new iam.ServicePrincipal('codepipeline.amazonaws.com'),
       inlinePolicies: {
         CodePipelinePolicy: new iam.PolicyDocument({
@@ -64,31 +104,28 @@ export class ApiPipelineStack extends cdk.Stack {
         }),
       },
     });
+  }
 
-    // CodeBuild project for SAM deployment
-    const samBuildProject = new codebuild.Project(this, 'SamBuildProject', {
-      role: codeBuildRole,
+  private createBuildProject(role: iam.Role, sourceBucket: s3.Bucket): codebuild.Project {
+    return new codebuild.Project(this, 'SamBuildProject', {
+      role: role,
       source: codebuild.Source.s3({
         bucket: sourceBucket,
-        path: 'lambda-api-sam.zip',
+        path: CONFIG.SOURCE_ARCHIVE,
       }),
-      // buildSpec: codebuild.BuildSpec.fromSourceFilename('buildspec.yaml'),
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
         phases: {
           install: {
             'runtime-versions': {
-              nodejs: 22,
+              nodejs: CONFIG.NODEJS_VERSION,
             },
-            commands: [
-              'pip install aws-sam-cli',
-            ],
+            commands: ['pip install aws-sam-cli'],
           },
           build: {
             commands: [
               'sam build',
-              `sam package --template-file template.yaml --s3-bucket ${sourceBucket.bucketName} --output-template-file packaged.yaml`,
-              `sam deploy --template-file packaged.yaml --stack-name lambda-api-sam-stack --s3-bucket ${sourceBucket.bucketName} --capabilities CAPABILITY_IAM`,
+              `sam package --template-file ${CONFIG.SAM_TEMPLATE} --s3-bucket ${sourceBucket.bucketName} --output-template-file ${CONFIG.PACKAGED_TEMPLATE}`,
             ],
           },
         },
@@ -97,48 +134,125 @@ export class ApiPipelineStack extends cdk.Stack {
         },
       }),
       environment: {
-        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        buildImage: CONFIG.BUILD_IMAGE,
         privileged: true,
       },
     });
+  }
 
-    // CodePipeline
+  private createDeployProject(
+    id: string,
+    role: iam.Role,
+    sourceBucket: s3.Bucket,
+    stackName: string,
+    deploymentPreference: string
+  ): codebuild.Project {
+    return new codebuild.Project(this, id, {
+      role: role,
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          install: {
+            'runtime-versions': {
+              nodejs: CONFIG.NODEJS_VERSION,
+            },
+            commands: ['pip install aws-sam-cli'],
+          },
+          build: {
+            commands: [
+              `sam deploy --template-file ${CONFIG.PACKAGED_TEMPLATE} --stack-name ${stackName} --s3-bucket ${sourceBucket.bucketName} --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides DeploymentPreferenceType=${deploymentPreference}`,
+            ],
+          },
+        },
+      }),
+      environment: {
+        buildImage: CONFIG.BUILD_IMAGE,
+        privileged: true,
+      },
+    });
+  }
+
+  private createPipeline(
+    role: iam.Role,
+    sourceBucket: s3.Bucket,
+    buildProject: codebuild.Project,
+    devDeployProject: codebuild.Project
+  ): codepipeline.Pipeline {
     const sourceOutput = new codepipeline.Artifact();
     const buildOutput = new codepipeline.Artifact();
 
-    new codepipeline.Pipeline(this, 'Pipeline', {
-      pipelineName: 'globomantics-pipeline',
-      role: codePipelineRole,
-      stages: [
-        {
-          stageName: 'Source',
-          actions: [
-            new codepipeline_actions.S3SourceAction({
-              actionName: 'S3Source',
-              bucket: sourceBucket,
-              bucketKey: 'lambda-api-sam.zip',
-              output: sourceOutput,
-              trigger: codepipeline_actions.S3Trigger.EVENTS,
-            }),
-          ],
-        },
-        {
-          stageName: 'BuildDeploy',
-          actions: [
-            new codepipeline_actions.CodeBuildAction({
-              actionName: 'SamBuildDeploy',
-              project: samBuildProject,
-              input: sourceOutput,
-            }),
-          ],
-        }
+    const stages = [
+      this.createSourceStage(sourceBucket, sourceOutput),
+      this.createBuildStage(buildProject, sourceOutput, buildOutput),
+      this.createDeployStage('Dev', 'DeployToDev', devDeployProject, buildOutput)
+    ];
+
+    return new codepipeline.Pipeline(this, 'Pipeline', {
+      pipelineName: CONFIG.PIPELINE_NAME,
+      role: role,
+      stages: stages,
+    });
+  }
+
+  private createSourceStage(sourceBucket: s3.Bucket, output: codepipeline.Artifact): codepipeline.StageProps {
+    return {
+      stageName: 'Source',
+      actions: [
+        new codepipeline_actions.S3SourceAction({
+          actionName: 'S3Source',
+          bucket: sourceBucket,
+          bucketKey: CONFIG.SOURCE_ARCHIVE,
+          output: output,
+          trigger: codepipeline_actions.S3Trigger.EVENTS,
+        }),
       ],
-    });
+    };
+  }
 
-    new cdk.CfnOutput(this, 'SourceBucketName', {
-      value: sourceBucket.bucketName,
-    });
+  private createBuildStage(
+    project: codebuild.Project,
+    input: codepipeline.Artifact,
+    output: codepipeline.Artifact
+  ): codepipeline.StageProps {
+    return {
+      stageName: 'Build',
+      actions: [
+        new codepipeline_actions.CodeBuildAction({
+          actionName: 'SamBuild',
+          project: project,
+          input: input,
+          outputs: [output],
+        }),
+      ],
+    };
+  }
 
-    
+  private createApprovalStage(stageName: string, actionName: string): codepipeline.StageProps {
+    return {
+      stageName: stageName,
+      actions: [
+        new codepipeline_actions.ManualApprovalAction({
+          actionName: actionName,
+        }),
+      ],
+    };
+  }
+
+  private createDeployStage(
+    stageName: string,
+    actionName: string,
+    project: codebuild.Project,
+    input: codepipeline.Artifact
+  ): codepipeline.StageProps {
+    return {
+      stageName: stageName,
+      actions: [
+        new codepipeline_actions.CodeBuildAction({
+          actionName: actionName,
+          project: project,
+          input: input,
+        }),
+      ],
+    };
   }
 }
