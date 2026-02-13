@@ -39,7 +39,7 @@ export class ApiPipelineStack extends cdk.Stack {
 
     // CodeBuild projects
     const samBuildProject = this.createBuildProject(codeBuildRole, sourceBucket);
-    const devDeployProject = this.createDeployProject('DevDeployProject', codeBuildRole, sourceBucket, CONFIG.STACK_NAMES.DEV, CONFIG.DEPLOYMENT_PREFERENCES.DEV);
+    const devDeployProject = this.createDeployProject('DevDeployProject', codeBuildRole, sourceBucket, CONFIG.STACK_NAMES.DEV);
     
     // CodePipeline
     this.createPipeline(codePipelineRole, sourceBucket, samBuildProject, devDeployProject);
@@ -145,8 +145,12 @@ export class ApiPipelineStack extends cdk.Stack {
     role: iam.Role,
     sourceBucket: s3.Bucket,
     stackName: string,
-    deploymentPreference: string
+    deploymentPreference?: string
   ): codebuild.Project {
+    const deployCommand = deploymentPreference
+      ? `sam deploy --template-file ${CONFIG.PACKAGED_TEMPLATE} --stack-name ${stackName} --s3-bucket ${sourceBucket.bucketName} --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides DeploymentPreferenceType=${deploymentPreference}`
+      : `sam deploy --template-file ${CONFIG.PACKAGED_TEMPLATE} --stack-name ${stackName} --s3-bucket ${sourceBucket.bucketName} --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset`;
+
     return new codebuild.Project(this, id, {
       role: role,
       buildSpec: codebuild.BuildSpec.fromObject({
@@ -159,9 +163,7 @@ export class ApiPipelineStack extends cdk.Stack {
             commands: ['pip install aws-sam-cli'],
           },
           build: {
-            commands: [
-              `sam deploy --template-file ${CONFIG.PACKAGED_TEMPLATE} --stack-name ${stackName} --s3-bucket ${sourceBucket.bucketName} --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides DeploymentPreferenceType=${deploymentPreference}`,
-            ],
+            commands: [deployCommand],
           },
         },
       }),
