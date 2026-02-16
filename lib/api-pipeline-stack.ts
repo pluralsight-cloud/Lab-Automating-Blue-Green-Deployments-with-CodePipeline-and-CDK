@@ -22,7 +22,7 @@ const CONFIG = {
   DEPLOYMENT_PREFERENCES: {
     DEV: 'AllAtOnce',
     TEST: 'AllAtOnce',
-    PROD: 'Canary10Percent10Minutes',
+    PROD: 'Linear10PercentEvery1Minute',
   },
 };
 
