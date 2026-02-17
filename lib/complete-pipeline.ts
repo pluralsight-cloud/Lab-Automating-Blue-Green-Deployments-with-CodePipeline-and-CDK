@@ -22,7 +22,7 @@ const CONFIG = {
   DEPLOYMENT_PREFERENCES: {
     DEV: 'AllAtOnce',
     TEST: 'AllAtOnce',
-    PROD: 'Linear10PercentEvery1Minute',
+    PROD: 'Canary10Percent10Minutes',
   },
 };
 
@@ -39,12 +39,12 @@ export class ApiPipelineStack extends cdk.Stack {
 
     // CodeBuild projects
     const samBuildProject = this.createBuildProject(codeBuildRole, sourceBucket);
-    const devDeployProject = this.createDeployProject('DevDeployProject', codeBuildRole, sourceBucket, CONFIG.STACK_NAMES.DEV);
-    // const testDeployProject = this.createDeployProject('TestDeployProject', codeBuildRole, sourceBucket, CONFIG.STACK_NAMES.TEST);
-    
-    
+    const devDeployProject = this.createDeployProject('DevDeployProject', codeBuildRole, sourceBucket, CONFIG.STACK_NAMES.DEV, CONFIG.DEPLOYMENT_PREFERENCES.DEV);
+    const testDeployProject = this.createDeployProject('TestDeployProject', codeBuildRole, sourceBucket, CONFIG.STACK_NAMES.TEST, CONFIG.DEPLOYMENT_PREFERENCES.TEST);
+    const prodDeployProject = this.createDeployProject('ProdDeployProject', codeBuildRole, sourceBucket, CONFIG.STACK_NAMES.PROD, CONFIG.DEPLOYMENT_PREFERENCES.PROD);
+
     // CodePipeline
-    this.createPipeline(codePipelineRole, sourceBucket, samBuildProject, devDeployProject);
+    this.createPipeline(codePipelineRole, sourceBucket, samBuildProject, devDeployProject, testDeployProject, prodDeployProject);
 
     new cdk.CfnOutput(this, 'SourceBucketName', {
       value: sourceBucket.bucketName,
@@ -76,9 +76,7 @@ export class ApiPipelineStack extends cdk.Stack {
                 'lambda:*',
                 'apigateway:*',
                 'iam:*',
-                'codedeploy:*',
-                'cloudwatch:*',
-                'events:*'
+                'codedeploy:*'
               ],
               resources: ['*'],
             }),
@@ -149,12 +147,8 @@ export class ApiPipelineStack extends cdk.Stack {
     role: iam.Role,
     sourceBucket: s3.Bucket,
     stackName: string,
-    deploymentPreference?: string
+    deploymentPreference: string
   ): codebuild.Project {
-    const deployCommand = deploymentPreference
-      ? `sam deploy --template-file ${CONFIG.PACKAGED_TEMPLATE} --stack-name ${stackName} --s3-bucket ${sourceBucket.bucketName} --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides DeploymentPreferenceType=${deploymentPreference}`
-      : `sam deploy --template-file ${CONFIG.PACKAGED_TEMPLATE} --stack-name ${stackName} --s3-bucket ${sourceBucket.bucketName} --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset`;
-
     return new codebuild.Project(this, id, {
       role: role,
       buildSpec: codebuild.BuildSpec.fromObject({
@@ -167,7 +161,9 @@ export class ApiPipelineStack extends cdk.Stack {
             commands: ['pip install aws-sam-cli'],
           },
           build: {
-            commands: [deployCommand],
+            commands: [
+              `sam deploy --template-file ${CONFIG.PACKAGED_TEMPLATE} --stack-name ${stackName} --s3-bucket ${sourceBucket.bucketName} --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --parameter-overrides DeploymentPreferenceType=${deploymentPreference}`,
+            ],
           },
         },
       }),
@@ -182,7 +178,9 @@ export class ApiPipelineStack extends cdk.Stack {
     role: iam.Role,
     sourceBucket: s3.Bucket,
     buildProject: codebuild.Project,
-    devDeployProject: codebuild.Project
+    devDeployProject: codebuild.Project,
+    testDeployProject: codebuild.Project,
+    prodDeployProject: codebuild.Project
   ): codepipeline.Pipeline {
     const sourceOutput = new codepipeline.Artifact();
     const buildOutput = new codepipeline.Artifact();
@@ -190,7 +188,11 @@ export class ApiPipelineStack extends cdk.Stack {
     const stages = [
       this.createSourceStage(sourceBucket, sourceOutput),
       this.createBuildStage(buildProject, sourceOutput, buildOutput),
-      this.createDeployStage('Dev', 'DeployToDev', devDeployProject, buildOutput)
+      this.createDeployStage('Dev', 'DeployToDev', devDeployProject, buildOutput),
+      this.createApprovalStage('ApproveTest', 'ApproveTestDeployment'),
+      this.createDeployStage('Test', 'DeployToTest', testDeployProject, buildOutput),
+      this.createApprovalStage('ApproveProduction', 'ApproveProductionDeployment'),
+      this.createDeployStage('Production', 'DeployToProduction', prodDeployProject, buildOutput),
     ];
 
     return new codepipeline.Pipeline(this, 'Pipeline', {
